@@ -301,6 +301,17 @@ that explicit lane, not the routine iteration requirement.
 
 ## Real-toolchain verification lanes
 
+Linux Rizin debugger ownership changes require a separate real-provider gate on
+Rizin 0.7.4. Run
+`npm run test:focused -- tests/boundary/providers/RizinInferiorTty.test.ts`.
+This test verifies the caller-selected TTY against the actual inferior's file
+descriptors, confirms `dbg.exitkills=false`, detaches through the `olj`/`o-`
+protocol, and checks that the target survives debugger close and writes to the
+selected TTY. The suite is included in the reverse-tools Vitest and mutation
+typecheck selections; its real-provider assertions skip when Rizin 0.7.4 is
+unavailable. Run the focused command above on a host with that provider for the
+explicit real-provider verification gate.
+
 Each real-toolchain command must require only the host tools needed to prove
 its stated claim. Use a host-native fixture for host/provider acceptance, and
 place optional cross-target formats or platform-specific runners in separate
@@ -848,6 +859,173 @@ establish passing Android coverage; inspect its execution receipt.
 
 The `termux-browser-diagnostics` artifact retains the Termux command log, exit
 status, and Android logcat on success or failure. The emulator is disposable.
+
+## Developer commands
+
+Use source feedback while editing, explicit boundary checks for the changed
+behavior, and complete CI evidence before merging.
+
+| Command                           | Scope                                                                                                                   |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `npm run test:local`              | Dirty source tests via the import graph, without build; explicit source paths run regardless of Git status              |
+| `npm run test:focused -- PATH...` | Exact existing test files; compiled boundaries build first, and unmatched paths fail                                    |
+| `npm run test:changed`            | Source tests affected since the merge base with `origin/main`, including committed and dirty changes                    |
+| `npm run test:fast`               | All domain, service, adapter, composition, conformance, and evaluation tests without build                              |
+| `npm run test:boundary`           | Boundary, CLI boundary, MCP boundary, process boundary, and process-global projects                                     |
+| `npm run test:mcp`                | MCP boundary project                                                                                                    |
+| `npm run test:acceptance`         | Complete compiled CLI and MCP acceptance workflows                                                                      |
+| `npm run test:watch`              | Dirty source tests in watch mode, without build                                                                         |
+| `npm run test:watch:all`          | Changed tests from every project; builds at startup, so rebuild after production edits before relying on compiled tests |
+| `npm run check:changed`           | Cached typecheck/lint and branch-related source feedback                                                                |
+| `npm run check:pr`                | Opt-in complete local deterministic gate and generated-file checks                                                      |
+| `npm run docs:check`              | Generated-document validation from current source and build outputs                                                     |
+
+For example:
+
+```bash
+npm run test:local -- src/config.test.ts
+npm run test:focused -- tests/acceptance/applications/runtime.test.ts
+npm run test:changed -- --base origin/main
+npm run test:changed -- --dry-run
+```
+
+`test:focused` accepts exact repository-relative test file paths. Source-only
+paths do not build; boundary, acceptance, process-global, or unfamiliar `tests/`
+paths build conservatively. Tests use Vitest concurrency and isolated
+workspaces; commands do not hold a broad test lock. Build and documentation
+writers retain checkout-local locks for their shared output files. Explicit
+selections do not use `--changed` or permit zero-test success.
+The dry-run option reports the chosen merge base, scope and build prerequisite
+without executing tests or building. A missing Git base reports how to fetch
+it or select another revision.
+
+Source typechecking needs no compiled runtime or generated test metadata.
+`npm run build:cached` compiles the CLI/MCP runtime and its packaged skill.
+Turbo's strict task environment preserves caller-selected `GOMAXPROCS`,
+`GOMEMLIMIT`, and `UV_THREADPOOL_SIZE` for resource-constrained builds and
+checks. These execution controls do not change artifact content, so changing
+their values retains cache reuse. They control individual runtimes; monitor
+the complete process family separately when enforcing a total memory budget.
+`npm run test:prepare` also generates the MCP contract test catalog, product
+catalog, and portable managed evidence used by the complete suite. Focused
+tests prepare those extra outputs only when their selected files consume them.
+The MCP test catalog is JSON in `.cache/mcp-tool-catalog.json`; the tracked
+test loader supplies its types without making generation a source-check
+prerequisite. Run `npm run mcp-catalog:generate` to refresh it independently.
+Documentation generation and managed conformance run through their separate
+`docs:generate` and `evidence:generate` task graphs.
+
+Changed selection can miss runtime registration, generated data, shell
+entrypoints, bridges, or other relationships absent from the import graph.
+An empty changed selection means no tests were selected, not verified
+correctness. Select relevant boundary files and real-provider lanes explicitly.
+Source projects also contain large capacity regressions; `test:fast` promises
+no compiled-runtime prerequisite, not a fixed time budget.
+
+Routine iterations and rebases need focused regressions and relevant checks.
+Before handing off a PR, run `npm run check` and generated-document checks when
+applicable; CI owns the full suite and coverage. Use the full local gate for
+broad changes or diagnosing CI, rather than after every edit. Package/install
+changes additionally need package verification; provider changes need actual
+provider evidence.
+
+Vitest projects use up to two workers, bounded by host parallelism.
+`process-boundary` runs later with serial files because process-tree sampling
+shares host resources. Acceptance and process-global cases use isolated forks
+without serial scheduling. Pure domain/service, composition, conformance,
+evaluation, CLI boundary, and MCP boundary projects share module graphs. Their
+tests avoid process-global state and keep resource cleanup test-scoped. Each
+MCP session still owns its resources, and CLI cases retain fresh command
+instances or subprocesses. CLI module mocks belong in `tests/process-global/`
+so they keep per-file isolation. Product catalog verification stays with the
+isolated filesystem boundary tests because it loads both source and compiled
+module graphs. Adapter, other boundary, acceptance, and process-global projects
+retain per-file isolation. See `vitest.config.ts` for current settings.
+
+The reused CLI boundary workers cap V8 old space at 384 MiB, based on their
+profiled allocation and cleanup behavior. This encourages collection between
+files; spawned REA processes retain their own heap settings.
+
+Vitest worker limits do not bound subprocesses launched within a test. Bound
+those batches separately so repeated CLI validation cannot oversubscribe the
+runner. Preserve simultaneous launches where concurrency is itself under test.
+
+Build/documentation writers hold checkout-local output locks. Tests do not
+hold a broad command lock; `check:pr` finishes tests before document validation.
+
+Vitest's persistent compile cache remains disabled. The `cliTest` fixture shares
+a temporary Node compile cache among its fresh CLI subprocesses. The worker
+removes it after test-scoped processes finish. Explicit child environment
+settings take precedence; children requesting `NODE_V8_COVERAGE` do not receive
+the fixture cache. These subprocesses are outside aggregate Vitest coverage;
+subprocess coverage attachment remains disabled. Cold-start import checks launch
+independently without this fixture cache.
+
+The Apple artifact verifier step shares a job-temporary bytecode cache among
+its fresh CLI/MCP children via `REA_ARTIFACT_NODE_COMPILE_CACHE`. The artifact
+helper maps this setting to child `NODE_COMPILE_CACHE`; npm, Turbo, and nested
+Vitest runs do not inherit that setting. Explicit `NODE_COMPILE_CACHE` takes
+precedence, and coverage collection or `NODE_DISABLE_COMPILE_CACHE=1` disables
+the helper's cache. The cache is discarded with the CI job.
+
+To evaluate persistent compile caching for repeated local runs, opt in for both
+cold and warm measurements with an isolated cache:
+
+```bash
+NODE_COMPILE_CACHE=.cache/node-compile npm test
+```
+
+Do not report the warm result as a cold-suite improvement, and do not enable
+the cache in coverage or benchmark CI without first showing that its
+instrumentation remains equivalent.
+
+## Coverage and timing
+
+CI owns coverage; aggregate and domain/contract thresholds are maintained in
+`vitest.config.ts`. They are glob-specific and never updated automatically.
+Coverage does not replace named boundary or real-provider scenarios.
+
+The `reverse-tools` coverage command enforces 100% statements and branches for
+the eight TypeScript modules owning PR #1279's review-fix scope. Its mutation
+command enforces a 100% score on the production expressions that implement the
+reviewed corrections: signal-terminated one-shot commands, Cutter descriptor
+identity handling, shared debugger-process cleanup ownership, active GDB
+command exit and cancellation handling, and Rizin startup-frame,
+timeout-evidence, and process-exit handling. A second exhaustive pass runs the
+focused Cutter and Rizin timeout semantics tests against every compilable
+selected mutant to avoid relying on per-test mutation coverage associations;
+Stryker reports compile-error mutants separately because those cannot execute
+tests. Both passes exclude unrelated pre-existing feature logic. The focused
+suite also exercises affected MCP routes. Unchanged server registrations,
+contracts, and the Python Cutter bridge remain covered by their existing
+contract, integration, and real-provider lanes.
+
+CI runs four native Vitest shards without retries. Each shard emits a blob
+report; the merge job produces aggregate coverage plus JUnit and JSON timing
+reports, uploads them together, and writes the slowest files to the workflow
+summary. Static checks, documentation, build, package verification, and
+real-system lanes remain separate jobs so one kind of evidence cannot stand in
+for another.
+
+The build job saves portable Turbo outputs across runs. Eight Linux real-system
+lanes restore this cache without waiting for the build job. The shared action
+derives its key from `test:prepare --dry=json` task hashes, runner OS and
+architecture, and `.npmrc`; test-only changes can reuse compiled outputs. Every
+build and verification command still runs, so Turbo checks task inputs and
+rebuilds misses. There is no prefix fallback to accumulate older build outputs.
+
+Native package jobs reuse the same workflow's Turbo cache for portable compiled
+JavaScript, skills, and catalogs. They retain the normal build and prepack
+commands, which restore matching outputs or rebuild on a cache miss. Native
+artifacts, dependency installs, package archives, and runtime verification remain
+host-local. Keep platform-dependent outputs out of this shared cache.
+
+The PR acceptance target is a median `npm run check:pr` wall time below three
+minutes across three warm-build runs on the benchmark host. Keep Vitest caches
+cold unless separately identified. A PR that touches packaging or real-system
+behavior requires the applicable `verify:*` lanes; packaging and installation
+changes also require `npm run verify:package`. The full-gate benchmark measures
+that explicit lane, not the routine iteration requirement.
 
 ## Apple native metadata and UI
 
